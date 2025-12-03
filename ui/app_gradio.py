@@ -14,7 +14,7 @@ from services.user_profile import process_user_profile_from_history
 # from config import config
 
 
-API_TOKEN = "YE6AXQmxjxU313ooClWFe228BG51go6F"#config.API_TOKEN
+API_TOKEN = ""#config.API_TOKEN
 MODEL_URL = "https://api.mistral.ai/v1/chat/completions"#config.MODEL_URL
 MODEL_NAME = "mistral-medium"#config.MODEL_NAME
 MODEL_TEMP = 0.7#config.MODEL_TEMP
@@ -445,14 +445,12 @@ def reset_chat():
     return initial_history, initial_history, "context", 0, True, ""
 
 
-# Создание Gradio интерфейса
 with gr.Blocks() as demo:
     gr.Markdown("## 🤖 Career Coach")
     gr.Markdown("Отвечай на вопросы подробно, чтобы получить персональные карьерные рекомендации!")
 
     chatbot_ui = gr.Chatbot(
         value=[{"role": "assistant", "content": get_current_question("context", 0)}],
-        # type="messages"
     )
 
     msg = gr.Textbox(label="Ваш ответ:", placeholder="Введите ваш ответ здесь...")
