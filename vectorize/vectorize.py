@@ -6,7 +6,7 @@ from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any, Union
 from pydantic import BaseModel, Field
 from enum import Enum
-from schema import CandidateProfile, ExperienceLevel
+from vectorize.schema import CandidateProfile, ExperienceLevel
 
 
 
@@ -37,7 +37,7 @@ class VacancySearchEngine:
             if isinstance(row["skills"], str):
                 skills = [skill.strip() for skill in row["skills"].split(",")]
             elif isinstance(row["skills"], list):
-                skills = row["skills"].lower()
+                skills = row["skills"]
         
         experience = ExperienceLevel.NO_EXPERIENCE
         if "experience" in row and row["experience"]:

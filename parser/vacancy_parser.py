@@ -27,7 +27,7 @@ class Vacancy_parser:
 
 
     def get_vacancy_skills(self, vacancy_id: str) -> List[str]:
-    """Получает навыки для конкретной вакансии"""
+
         try:
             url = f"https://api.hh.ru/vacancies/{vacancy_id}"
             response = requests.get(url, headers=self.headers)

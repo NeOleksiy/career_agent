@@ -9,6 +9,7 @@ class ExperienceLevel(str, Enum):
     THREE_TO_SIX = "от 3 до 6 лет"
     MORE_THAN_SIX = "более 6 лет"
 
+
 class CandidateProfile(BaseModel):
     """Модель для представления профиля кандидата."""
     

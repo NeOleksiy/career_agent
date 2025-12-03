@@ -1,39 +1,132 @@
 import gradio as gr
 import asyncio
-import aiohttp
-import tenacity
+import polars as pl
 import json
-import re
+import os
+from enum import Enum
+from typing import List, Optional
 
 from services.model_api import wrapped_get_completion
-from backend.rag import recommend_vacancies
+from vectorize.vectorize import VacancySearchEngine
+from vectorize.schema import ExperienceLevel, CandidateProfile
 from services.user_profile import process_user_profile_from_history
 
-from config import config
+# from config import config
 
 
-API_TOKEN= config.API_TOKEN
-MODEL_URL = config.MODEL_URL
-MODEL_NAME = f"gpt://{config.FOLDER_ID}/{config.MODEL_NAME}" 
-MODEL_TEMP = config.MODEL_TEMP
-MAX_HISTORY = config.MAX_HISTORY
+API_TOKEN = "YE6AXQmxjxU313ooClWFe228BG51go6F"#config.API_TOKEN
+MODEL_URL = "https://api.mistral.ai/v1/chat/completions"#config.MODEL_URL
+MODEL_NAME = "mistral-medium"#config.MODEL_NAME
+MODEL_TEMP = 0.7#config.MODEL_TEMP
+MAX_HISTORY = 10#config.MAX_HISTORY
+
+
+
+
+# Инициализация поискового движка
+VACANCY_DF = None
+SEARCH_ENGINE = None
+
+def init_search_engine():
+    """Инициализация поискового движка"""
+    global VACANCY_DF, SEARCH_ENGINE
+    
+    try:
+        print("Загрузка данных вакансий...")
+        VACANCY_DF = pl.read_parquet("./data_artefacts/vacancy_final.parquet")
+        print(f"Загружено {len(VACANCY_DF)} вакансий")
+        
+        print("Создание поискового движка...")
+        SEARCH_ENGINE = VacancySearchEngine("efederici/sentence-bert-base")
+
+        if os.path.exists("./data_artefacts/faiss_index.index"):
+            SEARCH_ENGINE.load_index("./data_artefacts/faiss_index.index", VACANCY_DF)
+        else:
+            SEARCH_ENGINE.fit(VACANCY_DF)
+            print("Поисковый движок создан")
+            SEARCH_ENGINE.save_index("./data_artefacts/faiss_index.index")
+            print("Индекс сохранен")
+            
+    except Exception as e:
+        print(f"Ошибка инициализации поискового движка: {e}")
+        raise
+
+
+def recommend_vacancies(career_goals: str, top_k: int = 10, **kwargs) -> tuple:
+    """
+    Поиск вакансий с использованием VacancySearchEngine
+    
+    Args:
+        career_goals: описание карьерных целей
+        top_k: количество возвращаемых вакансий
+        **kwargs: дополнительные параметры (игнорируются для совместимости)
+    
+    Returns:
+        tuple: (рекомендации, расширенные навыки, карьерные пути)
+    """
+    global SEARCH_ENGINE
+    
+    if SEARCH_ENGINE is None:
+        init_search_engine()
+    
+    # Создаем профиль кандидата из career_goals
+    # В реальном использовании нужно извлекать навыки из истории диалога
+    candidate_profile = CandidateProfile(
+        requirement_responsibility=career_goals,
+        skills=[],  # Здесь можно добавить извлеченные навыки
+        experience=ExperienceLevel.NO_EXPERIENCE
+    )
+    
+    try:
+        # Выполняем поиск
+        results = SEARCH_ENGINE.search(candidate_profile, top_n=top_k)
+        
+        # Преобразуем результаты в нужный формат
+        recommendations = []
+        
+        for row in results.rows(named=True):
+            rec = {
+                'title': row.get('title', ''),
+                'company': row.get('company', ''),
+                'experience': row.get('experience', ''),
+                'salary': row.get('salary', ''),
+                'skills': row.get('skills', []),
+                'requirements': row.get('requirements', ''),
+                'similarity_score': float(row.get('similarity_score', 0.0))
+            }
+            recommendations.append(rec)
+        
+        # Извлекаем расширенные навыки из найденных вакансий
+        expanded_skills = set()
+        for rec in recommendations:
+            if isinstance(rec.get('skills'), list):
+                expanded_skills.update(rec['skills'])
+        
+        # Карьерные пути можно генерировать на основе найденных вакансий
+        career_paths = []
+        for rec in recommendations[:5]:  # Берем топ-5 вакансий
+            if rec['title'] and rec['company']:
+                career_paths.append(f"{rec['title']} в {rec['company']}")
+        
+        return recommendations, list(expanded_skills)[:15], career_paths[:5]
+        
+    except Exception as e:
+        print(f"Ошибка поиска вакансий: {e}")
+        return [], [], []
 
 
 QUESTION_BLOCKS = {
     'context': [
         "Привет! Расскажи, пожалуйста, какая у тебя сейчас должность и в какой сфере ты работаешь?",
-        "Сколько лет у тебя общего опыта работы? А сколько именно в этой сфере/должности?",
-        "Какие проекты ты считаешь самыми значимыми в своей работе?"
+        "Сколько лет у тебя общего опыта работы?",
     ],
     'education': [
-        "Какое у тебя образование? Расскажи про вуз, специальность или курсы, которые были важными.",
-        "Какими профессиональными навыками ты владеешь лучше всего?",
-        "Какие личные качества помогают тебе в работе?",
+        "Какое у тебя образование? Расскажи про вуз, специальность или курсы.",
         "Какие языки программирования, инструменты или технологии ты чаще всего используешь?"
     ],
     'goals': [
         "Кем ты себя видишь через 1–3 года? Какая должность для тебя была бы следующей целью?",
-        "Какой формат работы тебе ближе — офис, удалёнка или гибрид?",
+        "Какой формат работы тебе ближе - офис, удалёнка или гибрид?",
         "Какой уровень дохода для тебя комфортный и мотивирующий?",
         "Что для тебя самое важное при выборе новой работы: стабильность, рост, интересные задачи, свобода, что-то ещё?"
     ]
@@ -41,23 +134,23 @@ QUESTION_BLOCKS = {
 
 
 # Системный промпт для валидации ответов
-VALIDATION_PROMPT = """Ты — помощник карьерного коуча. Твоя задача — проверить, ответил ли пользователь на заданный вопрос достаточно информативно.
+VALIDATION_PROMPT = """Ты - помощник карьерного коуча. Твоя задача - проверить, ответил ли пользователь на заданный вопрос.
 
 ВОПРОС: {question}
 ОТВЕТ ПОЛЬЗОВАТЕЛЯ: {answer}
 
 Критерии хорошего ответа:
-- Ответ относится к заданному вопросу
-- Содержит конкретную информацию, а не общие фразы
-- Длина ответа больше 10 символов
-- Не является отказом или уходом от темы
+- Краткий и ясный ответ
+- Ответ может быть кратким в пару слов, это нормально
+- Если ты предлагаешь конкретные варианты ответа, пользователь должен выбрать только среди них
+- Длина ответа больше 5 символов
 
 Ответь ТОЛЬКО "Да" или "Нет" без дополнительных пояснений."""
 
 
 async def validate_answer(question: str, answer: str) -> bool:
     """Проверяет, подходит ли ответ пользователя к заданному вопросу"""
-    if not answer or len(answer.strip()) < 5:
+    if not answer or len(answer.strip()) < 3:
         return False
     
     validation_prompt = VALIDATION_PROMPT.format(question=question, answer=answer)
@@ -65,7 +158,7 @@ async def validate_answer(question: str, answer: str) -> bool:
     
     try:
         llm_response = await wrapped_get_completion(
-            MODEL_URL, API_TOKEN, messages, MODEL_NAME, 0.3, folder_id=config.FOLDER_ID
+            MODEL_URL, API_TOKEN, messages, MODEL_NAME, 0.3
         )
         
         # Проверяем, содержит ли ответ "Да"
@@ -172,7 +265,7 @@ async def chatbot_step(user_input, history, current_block, question_index, waiti
 
 async def generate_final_recommendations(history, career_goals):
     """
-    Улучшенная генерация финальных рекомендаций
+    Генерация финальных рекомендаций
     """
     
     # Собираем профиль из истории    
@@ -184,98 +277,38 @@ async def generate_final_recommendations(history, career_goals):
     # Получаем рекомендации на основе расширенного профиля
     recommendations, expanded_skills, career_paths = recommend_vacancies(
         career_goals, 
-        top_k=10, 
-        top_career=2,
-        min_skill_freq=2,
-        top_skills=15
+        top_k=10
     )
     
     if not recommendations:
         return "К сожалению, не удалось найти подходящие рекомендации. Попробуйте уточнить ваши карьерные цели."
     
-    # Улучшенный системный промпт
-    # final_system_prompt = (
-    #     "Ты — опытный карьерный коуч, специализирующийся на технических ролях в ML/AI. "
-    #     "Твоя задача — проанализировать КОНКРЕТНЫЕ найденные вакансии и дать подробные (важно!) персональные рекомендации.\n\n"
-        
-    #     "ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ:\n"
-    #     "1. Используй ТОЛЬКО вакансии из списка 'found_positions' - не придумывай новые\n"
-    #     "2. Упоминай конкретные компании и позиции по названиям\n"
-    #     "3. Используй навыки из 'skills_to_develop' для планирования развития\n"
-    #     "4. Рассматривай карьерные пути из 'career_paths'\n\n"
-        
-    #     "ПРИМЕРЫ ПРАВИЛЬНЫХ ОТВЕТОВ:\n"
-    #     "✅ 'Рекомендую позицию Senior NLP engineer в Just AI'\n"
-    #     "✅ 'С Вашим опытом Вам подходит позиция ML Engineer в Сбере'\n"
-    #     "❌ 'Рекомендую работу в крупной IT-компании' (слишком общее)\n"
-    #     "❌ 'Советую найти позицию в Google' (компании нет в списке)\n\n"
-        
-    #     "ФОРМАТ ОТВЕТА (строго JSON):\n"
-    #     "{\n"
-    #     "  \"response\": \"Детальный анализ найденных вакансий с конкретными названиями компаний и позиций. Объясни почему именно эти вакансии подходят по целям пользователя. Обязательно упомяни релевантность.\",\n"
-    #     "  \"recommendation\": {\n"
-    #     "    \"nearest_position\": \"ТОЧНОЕ название позиции из found_positions с указанием компании\",\n"
-    #     "    \"nearest_position_reason\": \"Почему именно эта позиция (компания + роль) наиболее подходящая сейчас, укажи релевантность\",\n"
-    #     "    \"recommended_position\": \"Целевая позиция из found_positions для роста\",\n"
-    #     "    \"recommended_position_reason\": \"Обоснование выбора с учетом карьерных целей\",\n"
-    #     "    \"skills_gap\": \"Навыки из skills_to_develop, которые нужно развить для этих позиций\",\n"
-    #     "    \"plan_1_2_years\": \"План развития на основе найденных требований из requirements, вакансий и навыков\",\n"
-    #     "    \"recommended_courses\": [\"Курсы для развития навыков из skills_to_develop\"],\n"
-    #     "    \"current_vacancies\": [\"Топ-3 самые подходящие вакансии с компаниями из found_positions\"]\n"
-    #     "  }\n"
-    #     "}\n\n"
-        
-    #     "КРИТИЧЕСКИ ВАЖНО: Не создавай новые вакансии - работай только с предоставленными данными!"
-    # )
     final_system_prompt = (
-        "Ты — опытный карьерный коуч, специализирующийся на технических ролях в ML/AI. "
+        "Ты — опытный карьерный коуч, специализирующийся на технических ролях. "
         "Твоя задача — проанализировать КОНКРЕТНЫЕ найденные вакансии и дать подробные персональные рекомендации.\n\n"
         
         "ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:\n"
         "1. Используй ТОЛЬКО вакансии из списка 'found_positions' — не придумывай новые.\n"
         "2. Упоминай конкретные компании и позиции по названиям.\n"
-        "3. Используй навыки из 'skills_to_develop' и требования из 'requirements' для плана развития.\n"
+        "3. Используй навыки из 'skills_to_develop' для плана развития.\n"
         "4. Рассматривай карьерные пути из 'career_paths'.\n"
         "5. Отвечай СТРОГО в формате JSON без лишнего текста.\n\n"
         
-        "ПРИМЕР (few-shot):\n"
-        "Входные данные:\n"
+        "ФОРМАТ ОТВЕТА:\n"
         "{\n"
-        "  \"found_positions\": [\n"
-        "    {\"title\": \"ML Engineer\", \"company\": \"Сбер\"},\n"
-        "    {\"title\": \"Senior NLP Engineer\", \"company\": \"Just AI\"},\n"
-        "    {\"title\": \"Data Scientist\", \"company\": \"Яндекс\"}\n"
-        "  ],\n"
-        "  \"skills_to_develop\": [\"NLP\", \"Deep Learning\"],\n"
-        "  \"career_paths\": [\"ML Engineer → Senior ML Engineer\"]\n"
-        "}\n\n"
-        
-        "Ожидаемый ответ:\n"
-        "{\n"
-        "  \"response\": \"С учётом вашего опыта оптимально начать с роли ML Engineer в Сбере — там требования совпадают с вашим профилем. "
-        "Senior NLP Engineer в Just AI можно рассматривать как следующую цель, так как у вас есть базовые навыки NLP. "
-        "Data Scientist в Яндексе также подходит, но менее релевантен.\",\n"
+        "  \"response\": \"Текстовый анализ и рекомендации\",\n"
         "  \"recommendation\": {\n"
-        "    \"nearest_position\": \"ML Engineer в Сбер\",\n"
-        "    \"nearest_position_reason\": \"Эта роль наиболее близка к текущим навыкам, требования совпадают.\",\n"
-        "    \"recommended_position\": \"Senior NLP Engineer в Just AI\",\n"
-        "    \"recommended_position_reason\": \"Подходит для следующего карьерного шага, есть перспектива роста в NLP.\",\n"
-        "    \"skills_gap\": \"Необходимо подтянуть NLP и Deep Learning.\",\n"
-        "    \"plan_1_2_years\": \"В течение года укрепить экспертизу в NLP, через 2 года выйти на уровень Senior.\",\n"
-        "    \"recommended_courses\": [\"Курс по NLP\", \"Advanced Deep Learning\"],\n"
-        "    \"current_vacancies\": [\n"
-        "      \"ML Engineer в Сбер\",\n"
-        "      \"Senior NLP Engineer в Just AI\",\n"
-        "      \"Data Scientist в Яндекс\"\n"
-        "    ]\n"
+        "    \"nearest_position\": \"Должность в компании\",\n"
+        "    \"nearest_position_reason\": \"Причина выбора\",\n"
+        "    \"recommended_position\": \"Должность для следующего шага\",\n"
+        "    \"recommended_position_reason\": \"Причина выбора\",\n"
+        "    \"skills_gap\": \"Навыки для развития\",\n"
+        "    \"plan_1_2_years\": \"План развития на 1-2 года\",\n"
+        "    \"recommended_courses\": [\"Курс 1\", \"Курс 2\"],\n"
+        "    \"current_vacancies\": [\"Вакансия 1\", \"Вакансия 2\"]\n"
         "  }\n"
-        "}\n\n"
-        
-        # "КРИТИЧЕСКИ ВАЖНО: верни ответ ТОЛЬКО в JSON-формате как в примере выше. "
-        # "Любой текст вне JSON — ошибка."
-        "КРИТИЧЕСКИ ВАЖНО: Ответь строго JSON. Никакого текста вне JSON. Если нужно пояснение — включи его в поле response. Любой другой формат считается ошибкой»"
+        "}"
     )
-
 
     # Подготовка данных для модели
     payload = {
@@ -285,16 +318,16 @@ async def generate_final_recommendations(history, career_goals):
             {
                 "title": rec["title"],
                 "company": rec["company"],
-                "experience": rec["experience"],
-                "salary": rec["salary"],
-                "key_skills": rec["skills"][6:], 
-                "requirements": rec["requirements"],
-                "relevance_score": rec["similarity_score"]
+                "experience": rec.get("experience", ""),
+                "salary": rec.get("salary", ""),
+                "key_skills": rec.get("skills", [])[:5],
+                "requirements": rec.get("requirements", ""),
+                "relevance_score": rec.get("similarity_score", 0)
             }
-            for rec in recommendations[5:] 
+            for rec in recommendations[:5]
         ],
-        "skills_to_develop": expanded_skills,
-        "career_paths": career_paths[:5],  # Топ-5 карьерных путей
+        "skills_to_develop": expanded_skills[:10],
+        "career_paths": career_paths[:3],
     }
 
     user_message = f"""
@@ -306,19 +339,15 @@ async def generate_final_recommendations(history, career_goals):
 === МОИ КАРЬЕРНЫЕ ЦЕЛИ ===
 {career_goals}
 
-=== НАЙДЕННЫЕ ДЛЯ МЕНЯ ВАКАНСИИ (ОБЯЗАТЕЛЬНО используй эти конкретные позиции) ===
+=== НАЙДЕННЫЕ ДЛЯ МЕНЯ ВАКАНСИИ ===
 {json.dumps(payload["found_positions"], ensure_ascii=False, indent=2)}
 
 === НАВЫКИ ДЛЯ РАЗВИТИЯ ===
-{json.dumps(expanded_skills[:15], ensure_ascii=False)}
+{json.dumps(expanded_skills[:10], ensure_ascii=False)}
 
 === ВОЗМОЖНЫЕ КАРЬЕРНЫЕ ПУТИ ===
-{json.dumps(career_paths[:8], ensure_ascii=False)}
+{json.dumps(career_paths[:3], ensure_ascii=False)}
 """
-# ПРИМЕР ПРАВИЛЬНОГО ОТВЕТА:
-# "Рекомендую позицию 'Senior NLP engineer' в компании 'Just AI' как наиболее подходящую..."
-
-# ЗАДАЧА: Проанализируй ЭТИ КОНКРЕТНЫЕ вакансии и выбери лучшие для пользователя. Упоминай названия компаний!
 
     messages = [
         {"role": "system", "content": final_system_prompt},
@@ -327,80 +356,82 @@ async def generate_final_recommendations(history, career_goals):
 
     try:
         llm_response = await wrapped_get_completion(
-            MODEL_URL, API_TOKEN, messages, MODEL_NAME, MODEL_TEMP, folder_id=config.FOLDER_ID
+            MODEL_URL, API_TOKEN, messages, MODEL_NAME, MODEL_TEMP
         )
-        print(f"[LLM reponse]: {llm_response}")
-        # Улучшенное извлечение JSON
-        json_match = re.search(r'\{[\s\S]*\}', llm_response)
-        if json_match:
-            try:
-                result = json.loads(json_match.group(0))
-                
-                # Валидация результата
-                if "response" in result and "recommendation" in result:
-                    # res = result.get("response", "Рекомендации сформированы успешно!")
-                    # res += "\nНАВЫКИ ДЛЯ РАЗВИТИЯ:\n"
-                    # res += json.dumps(expanded_skills[:5], ensure_ascii=False)
-                    # res += "ВОЗМОЖНЫЕ КАРЬЕРНЫЕ ПУТИ:\n"
-                    # res += json.dumps(career_paths[:3], ensure_ascii=False)
-                    res = parse_llm_response(result)
-                    return res
-                    # return result.get("response", "Рекомендации сформированы успешно!")
-                else:
-                    print(f"[ERROR] Неполный JSON ответ: {result}")
-                    
-            except json.JSONDecodeError as e:
-                print(f"[ERROR] Ошибка парсинга JSON: {e}")
-                print(f"[ERROR] Ответ LLM: {llm_response}")
         
-        # Если JSON не извлечен, возвращаем как есть
-        res = llm_response
-        res += "\n\nНАВЫКИ ДЛЯ РАЗВИТИЯ:\n"
-        res += json.dumps(expanded_skills[:5], ensure_ascii=False)
-        res += "\n\nВОЗМОЖНЫЕ КАРЬЕРНЫЕ ПУТИ:\n"
-        res += json.dumps(career_paths[:3], ensure_ascii=False)
-        return llm_response
+        print(f"[LLM response]: {llm_response[:500]}...")
+        
+        # Парсинг JSON ответа
+        try:
+            result = json.loads(llm_response)
+        except json.JSONDecodeError:
+            # Если не получается, ищем JSON внутри текста
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', llm_response)
+            if json_match:
+                try:
+                    result = json.loads(json_match.group(0))
+                except:
+                    result = {"response": llm_response}
+            else:
+                result = {"response": llm_response}
+        
+        # Форматирование ответа
+        return parse_llm_response(result)
         
     except Exception as e:
         print(f"[ERROR] Ошибка при генерации рекомендаций: {e}")
         return f"Произошла ошибка при генерации рекомендаций: {e}"
 
 
-def parse_llm_response(data: str) -> str:
-    rec = data.get("recommendation", {})
+def parse_llm_response(data: dict) -> str:
+    """Форматирует ответ LLM в читаемый текст"""
+    
+    # Если это уже строка
+    if isinstance(data, str):
+        return data
+    
+    # Если это словарь с ожидаемой структурой
+    if isinstance(data, dict):
+        response = data.get("response", "")
+        rec = data.get("recommendation", {})
+        
+        text_parts = ["🔎 Рекомендации по карьерным шагам:\n"]
+        
+        if response:
+            text_parts.append(f"{response}\n")
+        
+        if rec.get("nearest_position"):
+            text_parts.append(f"📍 **Ближайшая позиция:** {rec['nearest_position']}")
+            if rec.get("nearest_position_reason"):
+                text_parts.append(f"Причина: {rec['nearest_position_reason']}\n")
+        
+        if rec.get("recommended_position"):
+            text_parts.append(f"⭐ **Рекомендуемая следующая позиция:** {rec['recommended_position']}")
+            if rec.get("recommended_position_reason"):
+                text_parts.append(f"Причина: {rec['recommended_position_reason']}\n")
+        
+        if rec.get("skills_gap"):
+            text_parts.append(f"🛠 **Навыки для развития:** {rec['skills_gap']}\n")
+        
+        if rec.get("plan_1_2_years"):
+            text_parts.append(f"📅 **План развития на 1–2 года:**\n{rec['plan_1_2_years']}\n")
+        
+        if rec.get("recommended_courses"):
+            courses = "\n".join([f"   • {c}" for c in rec['recommended_courses'][:5]])
+            text_parts.append(f"📚 **Рекомендованные курсы:**\n{courses}\n")
+        
+        if rec.get("current_vacancies"):
+            vacancies = "\n".join([f"   • {v}" for v in rec['current_vacancies'][:5]])
+            text_parts.append(f"💼 **Актуальные вакансии:**\n{vacancies}")
+        
+        return "\n".join(text_parts)
+    
+    return str(data)
 
-    text = []
-    text.append("🔎 Рекомендации по карьерным шагам:\n")
-
-    text.append(f"{data.get('response')}\n")
-
-    if rec.get("nearest_position"):
-        text.append(f"📍 **Ближайшая позиция:** {rec['nearest_position']}")
-        if rec.get("nearest_position_reason"):
-            text.append(f"Причина: {rec['nearest_position_reason']}\n")
-
-    if rec.get("recommended_position"):
-        text.append(f"⭐ **Рекомендуемая следующая позиция:** {rec['recommended_position']}")
-        if rec.get("recommended_position_reason"):
-            text.append(f"Причина: {rec['recommended_position_reason']}\n")
-
-    if rec.get("skills_gap"):
-        text.append(f"🛠 Навыки, которые нужно развить: {rec['skills_gap']}\n")
-
-    if rec.get("plan_1_2_years"):
-        text.append(f"📅 План развития на 1–2 года:\n{rec['plan_1_2_years']}\n")
-
-    if rec.get("recommended_courses"):
-        courses = "\n".join([f"   • {c}" for c in rec['recommended_courses']])
-        text.append(f"📚 Рекомендованные курсы:\n{courses}\n")
-
-    if rec.get("current_vacancies"):
-        vacancies = "\n".join([f"   • {v}" for v in rec['current_vacancies']])
-        text.append(f"💼 Актуальные вакансии:\n{vacancies}")
-
-    return "\n".join(text)
 
 def sync_chatbot(user_input, history, current_block, question_index, waiting_for_answer):
+    """Синхронная обертка для асинхронной функции"""
     history, current_block, question_index, waiting_for_answer, response = asyncio.run(
         chatbot_step(user_input, history, current_block, question_index, waiting_for_answer)
     )
@@ -408,18 +439,20 @@ def sync_chatbot(user_input, history, current_block, question_index, waiting_for
 
 
 def reset_chat():
+    """Сброс чата к начальному состоянию"""
     first_question = get_current_question("context", 0)
     initial_history = [{"role": "assistant", "content": first_question}]
     return initial_history, initial_history, "context", 0, True, ""
 
 
+# Создание Gradio интерфейса
 with gr.Blocks() as demo:
     gr.Markdown("## 🤖 Career Coach")
     gr.Markdown("Отвечай на вопросы подробно, чтобы получить персональные карьерные рекомендации!")
 
     chatbot_ui = gr.Chatbot(
         value=[{"role": "assistant", "content": get_current_question("context", 0)}],
-        type="messages"
+        # type="messages"
     )
 
     msg = gr.Textbox(label="Ваш ответ:", placeholder="Введите ваш ответ здесь...")
@@ -445,5 +478,12 @@ with gr.Blocks() as demo:
         [chatbot_ui, history_state, block_state, question_index_state, waiting_for_answer_state, msg]
     )
 
+
+# Инициализация поискового движка при запуске
+try:
+    init_search_engine()
+except Exception as e:
+    print(f"Не удалось инициализировать поисковый движок: {e}")
+    print("Поиск вакансий будет недоступен")
 
 demo.launch()
