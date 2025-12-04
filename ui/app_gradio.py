@@ -10,16 +10,17 @@ from services.model_api import wrapped_get_completion
 from vectorize.vectorize import VacancySearchEngine
 from vectorize.schema import ExperienceLevel, CandidateProfile
 from services.user_profile import process_user_profile_from_history
+from dotenv import load_dotenv
+load_dotenv()
 
 # from config import config
 
 
-API_TOKEN = ""#config.API_TOKEN
-MODEL_URL = "https://api.mistral.ai/v1/chat/completions"#config.MODEL_URL
-MODEL_NAME = "mistral-medium"#config.MODEL_NAME
-MODEL_TEMP = 0.7#config.MODEL_TEMP
-MAX_HISTORY = 10#config.MAX_HISTORY
-
+API_TOKEN = os.getenv("API_TOKEN")
+MODEL_URL = os.getenv("MODEL_URL")
+MODEL_NAME = os.getenv("MODEL_NAME")
+MODEL_TEMP = float(os.getenv("MODEL_TEMP", 0.7))
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", 10))
 
 
 
@@ -269,10 +270,10 @@ async def generate_final_recommendations(history, career_goals):
     """
     
     # Собираем профиль из истории    
-    user_profile_json, user_profile_text = process_user_profile_from_history(history)
+    user_profile = process_user_profile_from_history(history)
     
     # Расширяем поисковый запрос контекстом из профиля
-    enhanced_query = f"{career_goals}\n\nДополнительный контекст:\n{user_profile_text}"
+    enhanced_query = f"{career_goals}\n\nДополнительный контекст:\n{user_profile}"
     
     # Получаем рекомендации на основе расширенного профиля
     recommendations, expanded_skills, career_paths = recommend_vacancies(
@@ -312,7 +313,7 @@ async def generate_final_recommendations(history, career_goals):
 
     # Подготовка данных для модели
     payload = {
-        "user_profile": user_profile_json,
+        "user_profile": user_profile,
         "user_goals": career_goals,
         "found_positions": [
             {
@@ -334,7 +335,7 @@ async def generate_final_recommendations(history, career_goals):
 АНАЛИЗИРУЙ СЛЕДУЮЩИЕ ДАННЫЕ И ДАЙ РЕКОМЕНДАЦИИ:
 
 === МОЙ ПРОФИЛЬ ===
-{user_profile_json}
+{user_profile}
 
 === МОИ КАРЬЕРНЫЕ ЦЕЛИ ===
 {career_goals}
@@ -451,6 +452,7 @@ with gr.Blocks() as demo:
 
     chatbot_ui = gr.Chatbot(
         value=[{"role": "assistant", "content": get_current_question("context", 0)}],
+        type="messages",
     )
 
     msg = gr.Textbox(label="Ваш ответ:", placeholder="Введите ваш ответ здесь...")
