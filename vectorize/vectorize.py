@@ -7,7 +7,8 @@ from typing import List, Dict, Any, Union
 from pydantic import BaseModel, Field
 from enum import Enum
 from vectorize.schema import CandidateProfile, ExperienceLevel
-
+from metrics.logger import log_metric
+import time
 
 
 class VacancySearchEngine:
@@ -80,38 +81,56 @@ class VacancySearchEngine:
         
         logging.info(f"Индекс создан для {len(embeddings)} вакансий, размерность: {self.dimension}")
     
-    def search(self, query: Union[str, CandidateProfile], top_n: int = 5, filters: Dict[str, Any] = None) -> pl.DataFrame:
-        """
-        Поиск вакансий по текстовому запросу или профилю кандидата.
-        
-        Args:
-            query: Текстовый запрос или объект CandidateProfile
-            top_n: Количество возвращаемых результатов
-            filters: Словарь фильтров (поле: значение)
-            
-        Returns:
-            DataFrame с результатами поиска
-        """
+    def search(
+        self,
+        query: Union[str, CandidateProfile],
+        top_n: int = 5,
+        filters: Dict[str, Any] = None
+    ) -> pl.DataFrame:
+
+        # --- METRIC 1: проверка готовности поиска ---
         if self.index is None or self.df is None:
+            log_metric("search_not_initialized", 1)
             raise ValueError("Сначала необходимо обучить модель методом fit()")
-        
+
+        # --- METRIC 2: тип запроса ---
+        log_metric(
+            "search_query_type",
+            "profile" if isinstance(query, CandidateProfile) else "text"
+        )
+
         if isinstance(query, CandidateProfile):
             query_text = query.to_bert_string()
         else:
             query_text = query
-        
-        query_vector = self.model.encode([query_text], convert_to_numpy=True).astype(np.float32)
-        
-        distances, indices = self.index.search(query_vector, min(top_n * 3, len(self.df)))
-        logging.info(query_vector)
+
+        # --- METRIC 3: длина запроса ---
+        log_metric("query_text_length", len(query_text))
+
+        # --- METRIC 4: latency эмбеддингов ---
+        start_embed = time.time()
+        query_vector = self.model.encode(
+            [query_text],
+            convert_to_numpy=True
+        ).astype(np.float32)
+        log_metric("embedding_latency", time.time() - start_embed)
+
+        # --- METRIC 5: latency FAISS ---
+        start_search = time.time()
+        distances, indices = self.index.search(
+            query_vector,
+            min(top_n * 3, len(self.df))
+        )
+        log_metric("faiss_latency", time.time() - start_search)
 
         results = []
+
         for i, idx in enumerate(indices[0]):
             if idx < 0 or idx >= len(self.df):
                 continue
-                
+
             row = self.df.row(idx, named=True)
-            
+
             if filters:
                 skip = False
                 for field, value in filters.items():
@@ -120,14 +139,33 @@ class VacancySearchEngine:
                         break
                 if skip:
                     continue
-            
+
+            similarity = float(1 / (1 + distances[0][i]))
+
             result = dict(row)
-            result["similarity_score"] = float(1 / (1 + distances[0][i]))
+            result["similarity_score"] = similarity
             results.append(result)
-            
+
             if len(results) >= top_n:
                 break
-        
+
+        # --- METRIC 6: результаты поиска ---
+        log_metric("search_results_count", len(results))
+
+        if not results:
+            log_metric("search_empty", 1)
+            return pl.DataFrame()
+
+        # --- METRIC 7: качество выдачи ---
+        similarities = [r["similarity_score"] for r in results]
+        log_metric("search_mean_similarity", sum(similarities) / len(similarities))
+        log_metric("search_min_similarity", min(similarities))
+        log_metric("search_max_similarity", max(similarities))
+
+        # --- METRIC 8: разнообразие ---
+        companies = {r["company"] for r in results if "company" in r}
+        log_metric("search_unique_companies", len(companies))
+
         return pl.DataFrame(results)
     
     def search_by_profile(self, profile: CandidateProfile, top_n: int = 5, filters: Dict[str, Any] = None) -> pl.DataFrame:

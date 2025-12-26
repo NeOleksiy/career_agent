@@ -1,7 +1,8 @@
 import re
 from typing import List, Dict, Any
 from vectorize.schema import CandidateProfile, ExperienceLevel
-
+from services.validator import ConsoleValidator # Импортируй созданный класс
+from metrics.logger import log_metric
 
 def extract_user_data_from_history(history: List[Dict[str, str]]) -> Dict[str, Any]:
     """Упрощённое извлечение навыков, опыта и текстового описания из истории диалога."""
@@ -26,7 +27,7 @@ def extract_user_data_from_history(history: List[Dict[str, str]]) -> Dict[str, A
 
     # --- Experience level ---
     exp_enum = ExperienceLevel.NO_EXPERIENCE
-    match = re.search(r"(\d+)\s*(год|года|лет)", full_text)
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*(год|года|лет)", full_text)
     if match:
         years = int(match.group(1))
         if years <= 0:
@@ -49,12 +50,19 @@ def extract_user_data_from_history(history: List[Dict[str, str]]) -> Dict[str, A
 
 
 def process_user_profile_from_history(history: List[Dict[str, str]]) -> CandidateProfile:
-    """Возвращает Pydantic-модель CandidateProfile."""
-    
     data = extract_user_data_from_history(history)
-
-    return CandidateProfile(
+    profile = CandidateProfile(
         requirement_responsibility=data["requirement_text"],
         skills=data["skills"],
         experience=data["experience_enum"]
     )
+
+    log_metric("skills_count", len(profile.skills))
+    log_metric("profile_text_length", len(profile.requirement_responsibility))
+    log_metric("experience_level", profile.experience.value)
+
+    # ВЫЗОВ ВАЛИДАЦИИ (только в консоль)
+    ConsoleValidator.validate_profile(profile)
+    
+    return profile
+

@@ -3,6 +3,9 @@ import aiohttp
 import tenacity
 import json
 import os
+from services.validator import ConsoleValidator
+from metrics.logger import log_metric
+import time
 
 DEBUG = os.getenv("DEBUG_LLM", "0") == "1"
 
@@ -87,10 +90,21 @@ async def get_completion(url, token, messages, model, temperature=0.7, **kwargs)
     retry=tenacity.retry_if_exception_type((aiohttp.ClientError, ModelAPIError))
 )
 async def wrapped_get_completion(*args, **kwargs):
+    start = time.time()
     try:
-        return await get_completion(*args, **kwargs)
+        # 1. Получаем ответ от модели
+        response = await get_completion(*args, **kwargs)
+        log_metric("llm_latency", time.time() - start)
+        log_metric("llm_response_length", len(response))
+        # 2. ВАЛИДИРУЕМ (выводим в консоль)
+        ConsoleValidator.validate_llm_response(response)
+        
+        # 3. Возвращаем результат дальше в UI
+        return response
+        
     except Exception as e:
         error_msg = f"[Error Mistral]: {str(e)}"
+        log_metric("llm_error", str(e))
         if DEBUG:
             print(error_msg)
         return f'{{"response": "", "error": "{str(e)}"}}'
