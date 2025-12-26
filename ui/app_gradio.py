@@ -150,25 +150,46 @@ VALIDATION_PROMPT = """Ты - помощник карьерного коуча. 
 
 
 async def validate_answer(question: str, answer: str) -> bool:
-    """Проверяет, подходит ли ответ пользователя к заданному вопросу"""
-    if not answer or len(answer.strip()) < 3:
+    # минимальная проверка: ответ должен быть хоть сколько-то осмысленным
+    if not answer or len(answer.strip()) < 2:
         return False
-    
+
+    # если в ответе есть число → почти наверняка корректный ответ на вопросы про опыт, возраст и т.п.
+    import re
+    if re.search(r'\d+', answer):
+        return True
+
+    # fallback — LLM валидация
     validation_prompt = VALIDATION_PROMPT.format(question=question, answer=answer)
     messages = [{"role": "system", "content": validation_prompt}]
-    
+
     try:
         llm_response = await wrapped_get_completion(
             MODEL_URL, API_TOKEN, messages, MODEL_NAME, 0.3
         )
-        
-        # Проверяем, содержит ли ответ "Да"
-        return "да" in llm_response.lower().strip()[:10]
-    
+
+        print("LLM VALIDATION RAW:", llm_response)
+
+        reply = llm_response.lower().strip()
+
+        # модель любит писать "нет." → отрезаем точку
+        reply = reply.replace(".", "")
+
+        # модель иногда отвечает "да, ответ подходит"
+        if reply.startswith("да"):
+            return True
+
+        # если она отвечает что-то непонятное → пропускаем
+        if not reply in ["да", "нет"]:
+            return True
+
+        return False
+
     except Exception as e:
         print(f"Ошибка валидации: {e}")
-        # В случае ошибки считаем ответ валидным, чтобы не блокировать пользователя
         return True
+
+
 
 
 def get_current_question(current_block: str, question_index: int) -> str:
