@@ -53,7 +53,7 @@ class VacancySearchEngine:
         return CandidateProfile(
             requirement_responsibility=req_resp,
             skills=skills,
-            experience=experience
+            # experience=experience
         )
     
     def fit(self, df: pl.DataFrame) -> None:

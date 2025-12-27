@@ -40,8 +40,8 @@ class ConsoleValidator:
             print(f"✅ Длина описания: {text_len} симв.")
 
         # Проверка опыта
-        print(f"✅ Уровень опыта: {profile.experience}")
-        print("="*50 + "\n")
+        # print(f"✅ Уровень опыта: {profile.experience}")
+        # print("="*50 + "\n")
 
     @staticmethod
     def validate_search_results(results: List[Any]):

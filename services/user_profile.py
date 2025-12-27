@@ -23,7 +23,7 @@ def extract_user_data_from_history(history: List[Dict[str, str]]) -> Dict[str, A
             parts = [s.strip() for s in re.split(r"[;,]", block) if 1 < len(s.strip()) < 40]
             skills.extend(parts)
 
-    skills = list(set(skills))  # Уникальные
+    skills = list(set(history[7]['content'].split(',')))
 
     # --- Experience level ---
     exp_enum = ExperienceLevel.NO_EXPERIENCE
@@ -44,7 +44,7 @@ def extract_user_data_from_history(history: List[Dict[str, str]]) -> Dict[str, A
 
     return {
         "skills": skills,
-        "experience_enum": exp_enum,
+        # "experience_enum": exp_enum,
         "requirement_text": requirement_text
     }
 
@@ -54,12 +54,13 @@ def process_user_profile_from_history(history: List[Dict[str, str]]) -> Candidat
     profile = CandidateProfile(
         requirement_responsibility=data["requirement_text"],
         skills=data["skills"],
-        experience=data["experience_enum"]
+        # experience=data["experience_enum"]
     )
+    print(profile)
 
     log_metric("skills_count", len(profile.skills))
     log_metric("profile_text_length", len(profile.requirement_responsibility))
-    log_metric("experience_level", profile.experience.value)
+    # log_metric("experience_level", profile.experience.value)
 
     # ВЫЗОВ ВАЛИДАЦИИ (только в консоль)
     ConsoleValidator.validate_profile(profile)

@@ -23,10 +23,10 @@ class CandidateProfile(BaseModel):
         description="Список нормализованных навыков"
     )
     
-    experience: ExperienceLevel = Field(
-        default=ExperienceLevel.NO_EXPERIENCE,
-        description="Категория опыта работы"
-    )
+    # experience: ExperienceLevel = Field(
+    #     default=ExperienceLevel.NO_EXPERIENCE,
+    #     description="Категория опыта работы"
+    # )
     
     def to_bert_string(self) -> str:
         """Преобразует профиль в строку для векторизации."""
@@ -37,6 +37,6 @@ class CandidateProfile(BaseModel):
             skills_text = ", ".join(self.skills)
             parts.append(f"Навыки: {skills_text}")
         
-        parts.append(f"Опыт: {self.experience.value}")
+        # parts.append(f"Опыт: {self.experience.value}")
         
         return ". ".join(parts)

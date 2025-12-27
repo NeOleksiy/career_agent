@@ -75,7 +75,7 @@ def recommend_vacancies(career_goals: str, top_k: int = 10, **kwargs) -> tuple:
     candidate_profile = CandidateProfile(
         requirement_responsibility=career_goals,
         skills=[],  # Здесь можно добавить извлеченные навыки
-        experience=ExperienceLevel.NO_EXPERIENCE
+        # experience=ExperienceLevel.NO_EXPERIENCE
     )
     
     try:
@@ -296,7 +296,6 @@ async def generate_final_recommendations(history, career_goals):
     # Расширяем поисковый запрос контекстом из профиля
     enhanced_query = f"{career_goals}\n\nДополнительный контекст:\n{user_profile}"
     
-    # Получаем рекомендации на основе расширенного профиля
     recommendations, expanded_skills, career_paths = recommend_vacancies(
         career_goals, 
         top_k=10
@@ -500,11 +499,10 @@ with gr.Blocks() as demo:
     )
 
 
-# Инициализация поискового движка при запуске
-try:
-    init_search_engine()
-except Exception as e:
-    print(f"Не удалось инициализировать поисковый движок: {e}")
-    print("Поиск вакансий будет недоступен")
-
-demo.launch()
+if __name__ == "__main__":
+    try:
+        init_search_engine()
+    except Exception as e:
+        print(f"Не удалось инициализировать поисковый движок: {e}")
+        print("Поиск вакансий будет недоступен")
+    demo.launch()
