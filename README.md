@@ -61,15 +61,26 @@ career_agent — это интерактивный сервис карьерно
 
 ## Основные компоненты
 
-- **Gradio UI**: диалоговый интерфейс, пошагово собирающий информацию о пользователе.
+- **Gradio RAG UI**: диалоговый интерфейс, пошагово собирающий информацию о пользователе ([ui/app_gradio.py](ui/app_gradio.py)).
 - **LLM API**: валидация и генерация рекомендаций через Mistral ([services/model_api.py](services/model_api.py)).
 - **Vector Search**: поиск по эмбеддингам через Sentence-BERT и FAISS ([vectorize/vectorize.py](vectorize/vectorize.py)).
+- **Simple Benchmark**: Простой бенчмарк валидирующий векторный поиск и финальный ответ rag системы ([ui/benchmark.py](ui/benchmark.py)).
 - **Парсер вакансий**: сбор вакансий с hh.ru ([parser/vacancy_parser.py](parser/vacancy_parser.py)).
+
+## Схема взаимодействия
+
+![Схема](schema.png)
 
 ## Пример запуска
 
 ```sh
 python3 -m ui.app_gradio
+```
+
+## Пример запуска бенчмарка
+
+```sh
+python3 -m ui.benchmark
 ```
 
 ## Лицензия
